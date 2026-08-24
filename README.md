@@ -1,6 +1,6 @@
 # Lector de Etiquetas Neostone
 
-App de escritorio para reimprimir etiquetas Zebra GK420t en múltiples bultos.
+App de escritorio para reimprimir etiquetas Zebra ZD220t en múltiples bultos.
 
 ## Instalación
 
@@ -18,15 +18,20 @@ python app.py
 
 ## Formato del QR
 
-El QR debe contener:
+El QR debe contener los campos separados por TAB (`\t`):
 ```
-NEO1|pedido|id_escena|cliente|poblacion|descripcion|medida_L|medida_H|medida_P|bulto|total_bultos
+NEO1<TAB>pedido<TAB>id_escena<TAB>cliente<TAB>poblacion<TAB>descripcion<TAB>medida_L<TAB>medida_H<TAB>medida_P<TAB>bulto<TAB>total_bultos
 ```
 
-Ejemplo:
+Ejemplo (mostrando el TAB como `|` solo para legibilidad, en el QR real es un carácter de tabulación):
 ```
 NEO1|S1-00498|18|ARQ. MEICHTRY CAROLINA|SALTA|AJUSTE PARA COLUMNAS|100,00|2040,00|18,00|1|1
 ```
+
+> El separador es TAB y no `|`: la pistola lectora (emulación de teclado/HID) no
+> transmite `|` de forma confiable sin importar el layout de teclado configurado,
+> mientras que TAB es una tecla directa sin combinaciones. Etiquetas viejas
+> separadas por `|` se siguen aceptando como fallback (ver `models.py`).
 
 ## Flujo de uso
 
@@ -38,11 +43,12 @@ NEO1|S1-00498|18|ARQ. MEICHTRY CAROLINA|SALTA|AJUSTE PARA COLUMNAS|100,00|2040,0
 
 ## Especificaciones de impresión
 
-- **Impresora**: Zebra GK420t (USB)
-- **Tamaño etiqueta**: 10,80 × 7,00 cm
+- **Impresora**: Zebra ZD220t (USB), configurada como predeterminada en Windows
+- **Tamaño etiqueta**: 9,80 × 5,90 cm
 - **Velocidad**: 12,7 cm/s
-- **Oscuridad**: 1
-- **Márgenes no imprimibles**: 0,20 cm (izq/der)
+- **Oscuridad**: 15 (`^MD`, ajustable en `zpl_builder.py`, escala 0-30)
+- **Márgenes no imprimibles**: 0,40 cm
+- **QR**: magnificación dinámica (hasta x4) según la cantidad de contenido, para no exceder el recuadro reservado
 
 ## Archivos del proyecto
 
@@ -50,8 +56,10 @@ NEO1|S1-00498|18|ARQ. MEICHTRY CAROLINA|SALTA|AJUSTE PARA COLUMNAS|100,00|2040,0
 - `models.py` — Definición del formato QR
 - `zpl_builder.py` — Generador de ZPL para Zebra
 - `printer.py` — Comunicación con la impresora USB
-- `requirements.txt` — Dependencias (pywin32)
+- `requirements.txt` — Dependencias (pywin32, qrcode)
 - `run.bat` — Ejecutable rápido
+- `neostone.log` — Log de escaneos, impresiones y parámetros del QR generado (se crea al ejecutar la app)
+- `ultima_etiqueta.zpl` — ZPL crudo del último trabajo de impresión (se sobreescribe en cada impresión)
 
 ## Notas para desarrollo
 

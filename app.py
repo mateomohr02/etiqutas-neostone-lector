@@ -6,12 +6,28 @@ previsualización -> vuelve al inicio.
 """
 from __future__ import annotations
 
+import logging
 import tkinter as tk
+from pathlib import Path
 from tkinter import font as tkfont
 
 from models import InvalidLabelQR, LabelData
 from printer import PrinterError, send_zpl
 from zpl_builder import build_batch_zpl
+
+APP_DIR = Path(__file__).resolve().parent
+LOG_PATH = APP_DIR / "neostone.log"
+LAST_ZPL_PATH = APP_DIR / "ultima_etiqueta.zpl"
+
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    handlers=[
+        logging.FileHandler(LOG_PATH, encoding="utf-8"),
+        logging.StreamHandler(),
+    ],
+)
+logger = logging.getLogger(__name__)
 
 BG = "#0f172a"
 BG_PANEL = "#1e293b"
@@ -105,20 +121,31 @@ class App(tk.Tk):
         entry.place(x=-500, y=-500)  # oculto pero enfocado: recibe el "tipeo" del lector
         entry.focus_set()
         entry.bind("<Return>", self._on_scan_submit)
+        # El QR usa TAB como separador de campos (ver models.py). Por defecto Tkinter
+        # usa <Tab> para mover el foco a otro widget en vez de insertar el caracter,
+        # así que el resto del código quedaba sin llegar al buffer. Lo interceptamos
+        # para insertarlo como texto normal y cortar la propagación del evento.
+        entry.bind("<Tab>", self._on_scan_tab_key)
         self._scan_entry = entry
 
         self._big_button(
             self.container, "Cancelar", self._build_home, bg=BG_PANEL, fg=FG,
         ).pack(pady=20, ipadx=20, ipady=10)
 
+    def _on_scan_tab_key(self, event) -> str:
+        event.widget.insert(tk.INSERT, "\t")
+        return "break"
+
     def _on_scan_submit(self, _event=None) -> None:
         raw = self._scan_buffer.get()
         self._scan_buffer.set("")
         if not raw.strip():
             return
+        logger.debug("QR escaneado: %r", raw)
         try:
             self.current_label = LabelData.from_qr(raw)
         except InvalidLabelQR:
+            logger.warning("QR no reconocido: %r", raw)
             self.scan_error_label.config(
                 text="QR no reconocido. Escaneá una etiqueta Neostone válida."
             )
@@ -183,10 +210,17 @@ class App(tk.Tk):
         data = self.current_label
         assert data is not None
         total = self._qty_var.get()
+        logger.info("Imprimiendo pedido=%s id=%s en %d bultos", data.pedido, data.id_escena, total)
+        zpl = build_batch_zpl(data, total)
         try:
-            zpl = build_batch_zpl(data, total)
+            LAST_ZPL_PATH.write_text(zpl, encoding="utf-8")
+            logger.debug("ZPL enviado guardado en %s (revisar ahi el detalle por bulto)", LAST_ZPL_PATH)
+        except OSError:
+            logger.exception("No se pudo guardar %s", LAST_ZPL_PATH)
+        try:
             send_zpl(zpl)
         except PrinterError as exc:
+            logger.error("Fallo la impresion: %s", exc)
             self.print_error_label.config(text=str(exc))
             return
         self._build_done(total)

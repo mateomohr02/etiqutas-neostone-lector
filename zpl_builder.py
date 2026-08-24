@@ -1,80 +1,150 @@
-"""Genera el ZPL de una etiqueta Neostone para la Zebra GK420t.
+"""Genera el ZPL de una etiqueta Neostone para la Zebra ZD220t (203dpi, 9,80x5,90cm, ^BQN para el QR).
 
-Medidas de impresora (definidas por el usuario en el driver):
-  Ancho 10,80 cm / Alto 7,00 cm, área no imprimible 0,20 cm a cada lado.
-GK420t imprime a 203 dpi ~ 8 dots/mm, de ahí las conversiones de abajo.
-Las coordenadas de layout son aproximadas: van a necesitar un ajuste fino
-una vez probadas contra la impresora real (todas están como constantes
-acá arriba para facilitar ese calibrado).
+IMPORTANTE: estas coordenadas y tamaños se calcularon matemáticamente a partir de las
+especificaciones dadas (mm -> dots a 203dpi) y del layout ya validado en el preview HTML.
+Van a necesitar un ajuste fino con la ZD220t real: magnificación del QR, oscuridad y
+posiciones exactas de cada campo.
 """
 from __future__ import annotations
 
+import logging
+import re
+
+import qrcode
+from qrcode.constants import ERROR_CORRECT_Q
+
 from models import LabelData
 
-DOTS_PER_MM = 8
-LABEL_WIDTH_DOTS = round(108 * DOTS_PER_MM)   # 864
-LABEL_HEIGHT_DOTS = round(70 * DOTS_PER_MM)   # 560
-MARGIN_DOTS = round(2 * DOTS_PER_MM)          # 16 (0.20 cm no imprimible)
+logger = logging.getLogger(__name__)
 
-PRINT_SPEED_IPS = 5     # 12.7 cm/s
-DARKNESS = 1            # ~SD00-30, valor pedido por el usuario
+DPI = 203
+MM_PER_INCH = 25.4
+DOTS_PER_MM = DPI / MM_PER_INCH
 
-LEFT_X = MARGIN_DOTS
-TEXT_MAX_X = LABEL_WIDTH_DOTS - MARGIN_DOTS
+LABEL_WIDTH_MM = 98
+LABEL_HEIGHT_MM = 59
+MARGIN_MM = 4  # > 0,20cm de margen no imprimible del fabricante, ya lo cubre
+PRINT_SPEED_IPS = 5  # 12,7 cm/s == 5 in/s exacto
+DARKNESS = 15  # TODO: verificar/ajustar contra la impresora real (arrancaba en 1, casi sin tinta)
+QR_MAGNIFICATION_MAX = 4  # TODO: ajustar según legibilidad real del QR impreso
+QR_BOX_MM = 22
+QR_ERROR_CORRECTION = "Q"  # debe coincidir con la "Q" en ^FDQA,...
 
-# Bloque de texto (columna izquierda), deja lugar al contador y al QR a la derecha
-TEXT_BLOCK_WIDTH = 560
-
-QR_X = 640
-QR_Y = 260
-QR_MAGNIFICATION = 5
-
-COUNTER_X = 760
-COUNTER_Y = 20
-COUNTER_FONT = 55
+_ESCAPE_RE = re.compile(r"[\^~]")
 
 
-def _esc(value: str) -> str:
+def mm(valor_mm: float) -> int:
+    return round(valor_mm * DOTS_PER_MM)
+
+
+def _esc(texto: str | None) -> str:
     """Evita que ^ o ~ dentro de un dato corten el ZPL."""
-    return value.replace("^", " ").replace("~", " ")
+    return _ESCAPE_RE.sub("", texto or "")
+
+
+def _calcular_qr_modulos(contenido: str) -> int:
+    """Cantidad de módulos por lado del QR para este contenido puntual.
+
+    La cantidad de módulos (y por lo tanto el tamaño impreso) depende de
+    cuánto contenido tenga: una descripción larga genera un QR con más
+    módulos que uno corto.
+    """
+    qr = qrcode.QRCode(error_correction=ERROR_CORRECT_Q)
+    qr.add_data(str(contenido or ""))
+    qr.make(fit=True)
+    return qr.modules_count
+
+
+def _calcular_magnificacion_qr(modulos: int, max_box_dots: int) -> int:
+    """Mayor magnificación entera que sigue entrando en el recuadro disponible.
+
+    Con magnificación fija, un QR "grande" (más módulos) puede terminar
+    excediendo el espacio reservado en la etiqueta, asi que la ajustamos
+    según el contenido puntual de cada etiqueta.
+    """
+    magnificacion = max_box_dots // modulos
+    return min(QR_MAGNIFICATION_MAX, max(1, magnificacion))
 
 
 def build_label_zpl(data: LabelData) -> str:
-    counter = f"{data.bulto}/{data.total_bultos}"
+    ancho_dots = mm(LABEL_WIDTH_MM)
+    alto_dots = mm(LABEL_HEIGHT_MM)
+    margen = mm(MARGIN_MM)
+    ancho_contenido = ancho_dots - margen * 2
+
+    cliente = _esc(data.cliente)
+    poblacion = _esc(data.poblacion)
+    pedido = _esc(data.pedido)
+    descripcion = _esc(data.descripcion)
+    id_escena = _esc(data.id_escena)
+    contador = f"* {data.bulto}/{data.total_bultos}"
+    medidas = f"L  {_esc(data.medida_l)}   H  {_esc(data.medida_h)}   P  {_esc(data.medida_p)}"
+
+    # El QR se regenera con el contador (bulto/total) ya actualizado según
+    # la cantidad ingresada por el operario (ver LabelData.with_bulto), y su
+    # magnificación se recalcula según cuánto contenido tenga esta etiqueta
+    # puntual para no exceder QR_BOX_MM.
     qr_payload = data.to_qr()
+    qr_box_max_dots = mm(QR_BOX_MM)
+    qr_modulos = _calcular_qr_modulos(qr_payload)
+    qr_magnificacion = _calcular_magnificacion_qr(qr_modulos, qr_box_max_dots)
+    qr_box_dots = qr_modulos * qr_magnificacion
+    qr_x = ancho_dots - margen - qr_box_dots - mm(5)
+    qr_y = alto_dots - margen - qr_box_dots - mm(5)
+    ancho_medidas = qr_x - margen - mm(2)
+
+    modulo_mm = qr_magnificacion / DOTS_PER_MM
+    logger.info(
+        "QR bulto=%s/%s: %d caracteres, %d modulos/lado, magnificacion=%d "
+        "(maxima=%d), modulo=%.3fmm, box=%dx%d dots, darkness=^MD%d",
+        data.bulto, data.total_bultos, len(qr_payload), qr_modulos,
+        qr_magnificacion, QR_MAGNIFICATION_MAX, modulo_mm, qr_box_dots, qr_box_dots,
+        DARKNESS,
+    )
+    if modulo_mm < 0.33:
+        logger.warning(
+            "Modulo de QR muy chico (%.3fmm) para bulto=%s/%s: puede ser dificil "
+            "de leer con un lector 2D de resolucion media/baja. Considerar bajar "
+            "QR_ERROR_CORRECTION a 'M' o acortar el contenido del QR.",
+            modulo_mm, data.bulto, data.total_bultos,
+        )
 
     return "\n".join([
         "^XA",
-        "^CI28",
-        f"~SD{DARKNESS:02d}",
+        "^CI28",  # UTF-8, para tildes/ñ
+
+        f"^PW{ancho_dots}",
+        f"^LL{alto_dots}",
         f"^PR{PRINT_SPEED_IPS}",
-        f"^PW{LABEL_WIDTH_DOTS}",
-        f"^LL{LABEL_HEIGHT_DOTS}",
-        "^LH0,0",
+        f"^MD{DARKNESS}",
 
-        # Cliente / arquitecto
-        f"^FO{LEFT_X},15^A0N,42,42^FB{TEXT_BLOCK_WIDTH},1,0,L^FD{_esc(data.cliente)}^FS",
+        # Contador de bultos (arriba a la derecha), con un * a su izquierda
+        f"^FO{ancho_dots - margen - mm(20)},{margen}^A0N,{mm(3.6)},{mm(3.6)}^FB{mm(20)},1,0,R^FD{contador}^FS",
 
-        # Poblacion (izq) + ID (der, alineado dentro del bloque de texto)
-        f"^FO{LEFT_X},75^A0N,26,26^FD{_esc(data.poblacion)}^FS",
-        f"^FO{LEFT_X},75^A0N,30,30^FB{TEXT_BLOCK_WIDTH},1,0,R^FDID: {_esc(data.id_escena)}^FS",
+        # Cliente (arriba a la izquierda, negrita/grande)
+        f"^FO{margen},{margen}^A0N,{mm(4.3)},{mm(4.3)}^FB{ancho_contenido - mm(20)},1,0,L^FD{cliente}^FS",
 
-        # N. de pedido
-        f"^FO{LEFT_X},115^A0N,30,30^FDN. DE PEDIDO: {_esc(data.pedido)}^FS",
+        # Poblacion (izquierda) + ID (derecha), misma fila
+        f"^FO{margen},{margen + mm(7)}^A0N,{mm(3)},{mm(3)}^FD{poblacion}^FS",
+        f"^FO{ancho_dots - margen - mm(30)},{margen + mm(6)}^A0N,{mm(5)},{mm(5)}^FB{mm(30)},1,0,R^FDID: {id_escena}^FS",
 
-        # Descripcion del articulo (hasta 3 lineas, wrap automatico)
-        f"^FO{LEFT_X},165^A0N,28,28^FB{TEXT_BLOCK_WIDTH},3,4,L^FD{_esc(data.descripcion)}^FS",
+        # N. DE PEDIDO (etiqueta chica + valor grande en negrita)
+        f"^FO{margen},{margen + mm(13)}^A0N,{mm(3)},{mm(3)}^FDN. DE PEDIDO:^FS",
+        f"^FO{margen + mm(30)},{margen + mm(12)}^A0N,{mm(5)},{mm(5)}^FD{pedido}^FS",
 
-        # Medidas, abajo a la izquierda
-        (f"^FO{LEFT_X},{LABEL_HEIGHT_DOTS - 70}^A0N,32,32"
-         f"^FDL {_esc(data.medida_l)}   H {_esc(data.medida_h)}   P {_esc(data.medida_p)}^FS"),
+        # Descripcion (hasta 3 lineas), dejando lugar a "Accesorios" a la derecha
+        f"^FO{margen},{margen + mm(20)}^A0N,{mm(3.3)},{mm(3.3)}^FB{ancho_contenido - mm(26)},3,2,L^FD{descripcion}^FS",
 
-        # Contador de bultos, arriba a la derecha, con marco
-        f"^FO{COUNTER_X - 15},{COUNTER_Y - 10}^GB110,70,3^FS",
-        f"^FO{COUNTER_X},{COUNTER_Y}^A0N,{COUNTER_FONT},{COUNTER_FONT}^FD{counter}^FS",
+        # "Accesorios": texto fijo de plantilla, no viene de la base de datos
+        f"^FO{ancho_dots - margen - mm(19)},{margen + mm(20)}^A0N,{mm(3)},{mm(3)}^FB{mm(19)},1,0,L^FDAccesorios^FS",
 
-        # QR con todos los datos de la etiqueta, abajo a la derecha
-        f"^FO{QR_X},{QR_Y}^BQN,2,{QR_MAGNIFICATION}^FDLA,{qr_payload}^FS",
+        # Medidas L/H/P (abajo a la izquierda, negrita)
+        f"^FO{margen},{alto_dots - margen - mm(6)}^A0N,{mm(3.3)},{mm(3.3)}^FB{ancho_medidas},1,0,L^FD{medidas}^FS",
+
+        # QR (abajo a la derecha), generado nativamente por la impresora, no como imagen.
+        # Magnificación ajustada según el contenido, para no exceder QR_BOX_MM.
+        f"^FO{qr_x},{qr_y}^BQN,2,{qr_magnificacion},M",
+        f"^FDQA,{qr_payload}^FS",
 
         "^XZ",
     ]) + "\n"
