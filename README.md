@@ -46,7 +46,7 @@ NEO1|S1-00498|18|ARQ. MEICHTRY CAROLINA|SALTA|AJUSTE PARA COLUMNAS|100,00|2040,0
 - **Impresora**: Zebra ZD220t (USB), configurada como predeterminada en Windows
 - **Tamaño etiqueta**: 9,80 × 5,90 cm
 - **Velocidad**: 12,7 cm/s
-- **Oscuridad**: 15 (`^MD`, ajustable en `zpl_builder.py`, escala 0-30)
+- **Oscuridad**: 5 (`^MD`, ajustable en `zpl_builder.py`, escala 0-30)
 - **Márgenes no imprimibles**: 0,40 cm
 - **QR**: magnificación dinámica (hasta x4) según la cantidad de contenido, para no exceder el recuadro reservado
 
